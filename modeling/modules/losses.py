@@ -19,6 +19,7 @@ Ref:
 """
 from typing import Mapping, Text, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -278,6 +279,12 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
         """Generator training step."""
         inputs = inputs.contiguous()
         reconstructions = reconstructions.contiguous()
+
+        # print("LOSS MODULE")
+        # print(f"\t{inputs.shape=} {reconstructions.shape=}")
+        # print(f"\t{inputs.min()=} {inputs.max()=} {inputs.mean()=}")
+        # print(f"\t{reconstructions.min()=} {reconstructions.max()=} {reconstructions.mean()=}")
+
         if self.reconstruction_loss == "l1":
             reconstruction_loss = F.l1_loss(inputs, reconstructions, reduction="mean")
         elif self.reconstruction_loss == "l2":
@@ -285,6 +292,12 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
         else:
             raise ValueError(f"Unsuppored reconstruction_loss {self.reconstruction_loss}")
         reconstruction_loss *= self.reconstruction_weight
+
+        # print(f"\t{reconstruction_loss=}")
+        # print(f"\tMAX_DIFF: {torch.abs(inputs - reconstructions).max()}")
+        # np.save("reconstructions.npy", reconstructions.detach().cpu().numpy())
+        # np.save("origs.npy", inputs.detach().cpu().numpy())
+        # print("saved reconstructions.npy")
 
         # Compute perceptual loss.
         perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()

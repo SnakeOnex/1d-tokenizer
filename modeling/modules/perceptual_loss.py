@@ -60,6 +60,11 @@ class PerceptualLoss(torch.nn.Module):
 
         input = torch.nn.functional.interpolate(input, size=224, mode="bilinear", align_corners=False, antialias=True)
         target = torch.nn.functional.interpolate(target, size=224, mode="bilinear", align_corners=False, antialias=True)
+
+        # self.imagenet_mean = self.imagenet_mean.to(input.device)
+        # self.imagenet_std = self.imagenet_std.to(input.device)
+
+        # print(f"{input.device=} {target.device=} {self.imagenet_mean.device=} {self.imagenet_std.device=}")
         pred_input = self.convnext((input - self.imagenet_mean) / self.imagenet_std)
         pred_target = self.convnext((target - self.imagenet_mean) / self.imagenet_std)
         loss = torch.nn.functional.mse_loss(

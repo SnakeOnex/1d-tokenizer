@@ -103,7 +103,8 @@ def create_model_and_loss_module(config, logger, accelerator,
     logger.info("Creating model and loss module.")
     if model_type == "titok":
         model_cls = TiTok
-        loss_cls = ReconstructionLoss_Stage2 if config.model.vq_model.finetune_decoder else ReconstructionLoss_Stage1
+        # loss_cls = ReconstructionLoss_Stage2 if config.model.vq_model.finetune_decoder else ReconstructionLoss_Stage1
+        loss_cls = ReconstructionLoss_Single_Stage
     elif model_type == "tatitok":
         model_cls = TATiTok
         loss_cls = ReconstructionLoss_Single_Stage
@@ -159,6 +160,7 @@ def create_model_and_loss_module(config, logger, accelerator,
 
     # Create loss module along with discrminator.
     loss_module = loss_cls(config=config)
+    loss_module.to(accelerator.device)
 
     # Print Model for sanity check.
     if accelerator.is_main_process:
@@ -389,8 +391,9 @@ def train_one_epoch(config, logger, accelerator,
             images = batch["image"].to(
                 accelerator.device, memory_format=torch.contiguous_format, non_blocking=True
             )
-        if "text" in batch and model_type == "tatitok":
-            text = batch["text"]
+        if model_type == "tatitok":
+            # text = batch["text"]
+            text = ["a photo of a cat"]*images.size(0)
             with torch.no_grad():
                 text_guidance = clip_tokenizer(text).to(accelerator.device)
                 cast_dtype = clip_encoder.transformer.get_cast_dtype()
@@ -405,29 +408,24 @@ def train_one_epoch(config, logger, accelerator,
         data_time_meter.update(time.time() - end)
 
         # Obtain proxy codes
-        if pretrained_tokenizer is not None:
-            pretrained_tokenizer.eval()
-            proxy_codes = pretrained_tokenizer.encode(images)
-        else:
-            proxy_codes = None
+        # if pretrained_tokenizer is not None:
+        #     pretrained_tokenizer.eval()
+        #     proxy_codes = pretrained_tokenizer.encode(images)
+        # else:
+        proxy_codes = None
 
         with accelerator.accumulate([model, loss_module]):
             if model_type == "titok":
                 reconstructed_images, extra_results_dict = model(images)
-                if proxy_codes is None:
-                    autoencoder_loss, loss_dict = loss_module(
-                        images,
-                        reconstructed_images,
-                        extra_results_dict,
-                        global_step,
-                        mode="generator",
-                    )
-                else:
-                    autoencoder_loss, loss_dict = loss_module(
-                        proxy_codes,
-                        reconstructed_images,
-                        extra_results_dict
-                    )    
+                # print(f"shapes: {images.shape=}, {reconstructed_images.shape=}")
+                # print(f"{images.min()=}, {images.max()=}, {reconstructed_images.min()=}, {reconstructed_images.max()=}")
+                autoencoder_loss, loss_dict = loss_module(
+                    images,
+                    reconstructed_images,
+                    extra_results_dict,
+                    global_step,
+                    mode="generator",
+                )
             elif model_type == "tatitok":
                 reconstructed_images, extra_results_dict = model(images, text_guidance)
                 autoencoder_loss, loss_dict = loss_module(
@@ -903,6 +901,11 @@ def reconstruct_images(model, original_images, fnames, accelerator,
         original_images,
         reconstructed_images
     )
+
+    # print(f"{original_images.shape=}, {reconstructed_images.shape=}")
+    # print(f"{original_images.min()=}, {original_images.max()=}")
+    # print(f"{reconstructed_images.min()=}, {reconstructed_images.max()=}")
+
     # Log images.
     if config.training.enable_wandb:
         accelerator.get_tracker("wandb").log_images(

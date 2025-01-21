@@ -107,31 +107,31 @@ class TiTok(BaseModel, PyTorchModelHubMixin, tags=["arxiv:2406.07550", "image-to
                 token_size=config.model.vq_model.token_size,
                 commitment_cost=config.model.vq_model.commitment_cost,
                 use_l2_norm=config.model.vq_model.use_l2_norm,)
-        elif self.quantize_mode == "vae":
-            self.quantize = DiagonalGaussianDistribution
+        # elif self.quantize_mode == "vae":
+        #     self.quantize = DiagonalGaussianDistribution
         else:
             raise NotImplementedError
         
-        if self.finetune_decoder:
-            # Freeze encoder/quantizer/latent tokens
-            self.latent_tokens.requires_grad_(False)
-            self.encoder.eval()
-            self.encoder.requires_grad_(False)
-            self.quantize.eval()
-            self.quantize.requires_grad_(False)
-
-            # Include MaskGiT-VQGAN's quantizer and decoder
-            self.pixel_quantize = Pixel_Quantizer(
-                num_embeddings=1024, embedding_dim=256, commitment_cost=0.25)
-            self.pixel_decoder = Pixel_Decoder(OmegaConf.create(
-                {"channel_mult": [1, 1, 2, 2, 4],
-                "num_resolutions": 5,
-                "dropout": 0.0,
-                "hidden_channels": 128,
-                "num_channels": 3,
-                "num_res_blocks": 2,
-                "resolution": 256,
-                "z_channels": 256}))
+        # if self.finetune_decoder:
+        #     # Freeze encoder/quantizer/latent tokens
+        #     self.latent_tokens.requires_grad_(False)
+        #     self.encoder.eval()
+        #     self.encoder.requires_grad_(False)
+        #     self.quantize.eval()
+        #     self.quantize.requires_grad_(False)
+        #
+        #     # Include MaskGiT-VQGAN's quantizer and decoder
+        #     self.pixel_quantize = Pixel_Quantizer(
+        #         num_embeddings=1024, embedding_dim=256, commitment_cost=0.25)
+        #     self.pixel_decoder = Pixel_Decoder(OmegaConf.create(
+        #         {"channel_mult": [1, 1, 2, 2, 4],
+        #         "num_resolutions": 5,
+        #         "dropout": 0.0,
+        #         "hidden_channels": 128,
+        #         "num_channels": 3,
+        #         "num_res_blocks": 2,
+        #         "resolution": 256,
+        #         "z_channels": 256}))
         
     def _save_pretrained(self, save_directory: Path) -> None:
         """Save weights and config to a local directory."""
@@ -160,33 +160,33 @@ class TiTok(BaseModel, PyTorchModelHubMixin, tags=["arxiv:2406.07550", "image-to
             module.weight.data.fill_(1.0)
 
     def encode(self, x):
-        if self.finetune_decoder:
-            with torch.no_grad():
-                self.encoder.eval()
-                self.quantize.eval()
-                z = self.encoder(pixel_values=x, latent_tokens=self.latent_tokens)
-                z_quantized, result_dict = self.quantize(z)
-                result_dict["quantizer_loss"] *= 0
-                result_dict["commitment_loss"] *= 0
-                result_dict["codebook_loss"] *= 0
-        else:
-            z = self.encoder(pixel_values=x, latent_tokens=self.latent_tokens)
-            if self.quantize_mode == "vq":
-                z_quantized, result_dict = self.quantize(z)
-            elif self.quantize_mode == "vae":
-                posteriors = self.quantize(z)
-                z_quantized = posteriors.sample()
-                result_dict = posteriors
+        # if self.finetune_decoder:
+        #     with torch.no_grad():
+        #         self.encoder.eval()
+        #         self.quantize.eval()
+        #         z = self.encoder(pixel_values=x, latent_tokens=self.latent_tokens)
+        #         z_quantized, result_dict = self.quantize(z)
+        #         result_dict["quantizer_loss"] *= 0
+        #         result_dict["commitment_loss"] *= 0
+        #         result_dict["codebook_loss"] *= 0
+        # else:
+        z = self.encoder(pixel_values=x, latent_tokens=self.latent_tokens)
+        if self.quantize_mode == "vq":
+            z_quantized, result_dict = self.quantize(z)
+        # elif self.quantize_mode == "vae":
+        #     posteriors = self.quantize(z)
+        #     z_quantized = posteriors.sample()
+        #     result_dict = posteriors
 
         return z_quantized, result_dict
     
     def decode(self, z_quantized):
         decoded = self.decoder(z_quantized)
-        if self.finetune_decoder:
-            quantized_states = torch.einsum(
-                'nchw,cd->ndhw', decoded.softmax(1),
-                self.pixel_quantize.embedding.weight)
-            decoded = self.pixel_decoder(quantized_states)
+        # if self.finetune_decoder:
+        #     quantized_states = torch.einsum(
+        #         'nchw,cd->ndhw', decoded.softmax(1),
+        #         self.pixel_quantize.embedding.weight)
+        #     decoded = self.pixel_decoder(quantized_states)
         return decoded
     
     def decode_tokens(self, tokens):
