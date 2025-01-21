@@ -389,8 +389,9 @@ def train_one_epoch(config, logger, accelerator,
             images = batch["image"].to(
                 accelerator.device, memory_format=torch.contiguous_format, non_blocking=True
             )
-        if "text" in batch and model_type == "tatitok":
-            text = batch["text"]
+        if model_type == "tatitok":
+            text = ["a photo of a cat"]*images.size(0)
+            # text = batch["text"]
             with torch.no_grad():
                 text_guidance = clip_tokenizer(text).to(accelerator.device)
                 cast_dtype = clip_encoder.transformer.get_cast_dtype()
