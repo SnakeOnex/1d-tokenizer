@@ -5,7 +5,7 @@ experiment:
     max_train_examples: 1_281_167
     save_every: 50_000
     eval_every: 50_000
-    generate_every: 5_000
+    generate_every: 1_000
     log_every: 50
     log_grad_norm_every: 1_000
     resume: True
@@ -41,14 +41,19 @@ losses:
 
 dataset:
     params:
-        train_shards_path_or_url: "imagenet_sharded/train/imagenet-train-{0000..0252}.tar"
-        eval_shards_path_or_url: "imagenet_sharded/val/imagenet-val-{0000..0009}.tar"
+        # train_shards_path_or_url: "imagenet_sharded/train/imagenet-train-{0000..0252}.tar"
+        # eval_shards_path_or_url: "imagenet_sharded/val/imagenet-val-{0000..0009}.tar"
+        train_shards_path_or_url: "imagenet_sharded/train/imagenet-train-{000000..000311}.tar"
+        eval_shards_path_or_url: "imagenet_sharded/val/imagenet-val-{000000..000049}.tar"
+        dataset_with_class_label: True
+        dataset_with_text_label: False
         num_workers_per_gpu: 12
     preprocessing:
         resize_shorter_edge: 256
         crop_size: 256
         random_crop: True
         random_flip: True
+        res_ratio_filtering: False
 
 
 optimizer:

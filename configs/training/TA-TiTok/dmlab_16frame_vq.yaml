@@ -1,26 +1,26 @@
 experiment:
-    project: "tatitok_bl128_vq"
-    name: "tatitok_bl128_vq_run1"
-    output_dir: "tatitok_bl128_vq_run1"
+    project: "dmlab_16frame_vq"
+    name: "dmlab_16frame_vq"
+    output_dir: "dmlab_16frame_vq"
     max_train_examples: 685_800_000
     save_every: 50_000
     eval_every: 50_000
-    generate_every: 5_000
+    generate_every: 1_000
     log_every: 50
     log_grad_norm_every: 1_000
-    resume: True
+    resume: False
 
 model:
     vq_model:
         quantize_mode: vq
-        codebook_size: 8192
+        codebook_size: 1024
         token_size: 64
         use_l2_norm: False
         commitment_cost: 0.25
         clustering_vq: True
         # vit arch
         vit_enc_model_size: "base"
-        vit_dec_model_size: "large"
+        vit_dec_model_size: "base"
         vit_enc_patch_size: 16
         vit_dec_patch_size: 16
         num_latent_tokens: 128
@@ -41,18 +41,19 @@ losses:
 dataset:
     params:
         # train_shards_path_or_url: "datacomp_sharded/train/datacomp-train-{000000..140089}.tar"
-        # eval_shards_path_or_url: "imagenet_sharded/val/imagenet-val-{0000..0009}.tar"
-        train_shards_path_or_url: "imagenet_sharded/train/imagenet-train-{000000..000311}.tar"
-        eval_shards_path_or_url: "imagenet_sharded/val/imagenet-val-{000000..000049}.tar"
+        # eval_shards_path_or_url: "imagenet_sharded/val/imagenet-val-{0000..0009}.tar" train_shards_path_or_url: "imagenet_sharded/train/imagenet-train-{000000..000311}.tar"
+        # eval_shards_path_or_url: "imagenet_sharded/val/imagenet-val-{000000..000049}.tar"
+        train_shards_path_or_url: "dmlab_16frames_wds/dmlab-train-{000000..000044}.tar"
+        eval_shards_path_or_url: "dmlab_16frames_wds/dmlab-val-{000000..000019}.tar"
         num_workers_per_gpu: 12
         dataset_with_class_label: True
         dataset_with_text_label: False
     preprocessing:
-        resize_shorter_edge: 256
-        crop_size: 256
+        resize_shorter_edge: 64
+        crop_size: [64, 1024]
         random_crop: True
         random_flip: True
-        res_ratio_filtering: True
+        res_ratio_filtering: False
 
 optimizer:
     name: adamw 
@@ -71,13 +72,13 @@ lr_scheduler:
         end_lr: 1e-5
 
 training:
-    gradient_accumulation_steps: 1
+    gradient_accumulation_steps: 2
     per_gpu_batch_size: 32
     mixed_precision: "fp16"
     enable_tf32: True
     enable_wandb: True
     use_ema: True
     seed: 42
-    max_train_steps: 650_000
+    max_train_steps: 350_000
     num_generated_images: 2
     max_grad_norm: 1.0
