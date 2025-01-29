@@ -5,7 +5,7 @@ experiment:
     max_train_examples: 685_800_000
     save_every: 50_000
     eval_every: 50_000
-    generate_every: 1_000
+    generate_every: 2_500
     log_every: 50
     log_grad_norm_every: 1_000
     resume: False
@@ -80,6 +80,6 @@ training:
     enable_wandb: True
     use_ema: True
     seed: 42
-    max_train_steps: 300_000
+    max_train_steps: 250_000
     num_generated_images: 2
     max_grad_norm: 1.0

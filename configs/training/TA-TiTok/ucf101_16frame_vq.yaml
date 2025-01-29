@@ -1,7 +1,7 @@
 experiment:
-    project: "dmlab_16frame_vq"
-    name: "dmlab_16frame_vq"
-    output_dir: "dmlab_16frame_vq"
+    project: "ucf101_16frame_vq"
+    name: "ucf101_16frame_vq"
+    output_dir: "ucf101_16frame_vq"
     max_train_examples: 685_800_000
     save_every: 50_000
     eval_every: 50_000
@@ -43,15 +43,15 @@ dataset:
         # train_shards_path_or_url: "datacomp_sharded/train/datacomp-train-{000000..140089}.tar"
         # eval_shards_path_or_url: "imagenet_sharded/val/imagenet-val-{0000..0009}.tar" train_shards_path_or_url: "imagenet_sharded/train/imagenet-train-{000000..000311}.tar"
         # eval_shards_path_or_url: "imagenet_sharded/val/imagenet-val-{000000..000049}.tar"
-        train_shards_path_or_url: "dmlab_16frames_wds/dmlab-train-{000000..000044}.tar"
-        eval_shards_path_or_url: "dmlab_16frames_wds/dmlab-val-{000000..000019}.tar"
+        train_shards_path_or_url: "ucf101_16frames_wds/ucf101-train-{000000..000007}.tar"
+        eval_shards_path_or_url: "ucf101_16frames_wds/ucf101-val-{000000..000003}.tar"
         num_workers_per_gpu: 12
         dataset_with_class_label: True
         dataset_with_text_label: False
     preprocessing:
         resize_shorter_edge: 64
-        crop_size: [64, 1024]
-        random_crop: True
+        crop_size: [64, 1360]
+        random_crop: False
         random_flip: True
         res_ratio_filtering: False
 
