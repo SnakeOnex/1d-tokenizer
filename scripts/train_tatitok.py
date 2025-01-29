@@ -27,6 +27,7 @@ from accelerate import Accelerator
 import torch
 from omegaconf import OmegaConf
 from utils.logger import setup_logger
+from datetime import datetime
 
 from utils.train_utils import (
     get_config, create_clip_model, 
@@ -51,6 +52,8 @@ def main():
 
     output_dir = config.experiment.output_dir
     os.makedirs(output_dir, exist_ok=True)
+    output_dir = os.path.join(output_dir, datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    os.makedirs(output_dir, exist_ok=False)
     config.experiment.logging_dir = os.path.join(output_dir, "logs")
 
     # Whether logging to Wandb or Tensorboard.
@@ -72,7 +75,15 @@ def main():
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
-        accelerator.init_trackers(config.experiment.name)
+        vq = config.model.vq_model
+        model_sizes = f"{vq.vit_enc_model_size[0]}{vq.vit_dec_model_size[0]}"
+        patch_sizes = f"{vq.vit_enc_patch_size}x{vq.vit_dec_patch_size}"
+        num_tokens = f"{vq.codebook_size}_{vq.num_latent_tokens}{vq.quantize_mode}"
+        run_name = f"{model_sizes}_{patch_sizes}_{num_tokens}"
+
+        config_dict = OmegaConf.to_container(config, resolve=True)
+        accelerator.init_trackers(config.experiment.name, config=config_dict, init_kwargs={"wandb": {"name": run_name}})
+
         config_path = Path(output_dir) / "config.yaml"
         logger.info(f"Saving config to {config_path}")
         OmegaConf.save(config, config_path)
