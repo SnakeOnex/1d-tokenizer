@@ -1,0 +1,29 @@
+method: grid
+metric:
+  name: train/perceptual_loss
+  goal: minimize
+
+command:
+  - bash
+  - train_dmlab.sh
+  # - ~/.local/bin/accelerate
+  # - launch
+  - "--num_machines=1"
+  - "--num_processes=1"
+  - "--machine_rank=0"
+  - "--main_process_ip=127.0.0.1"
+  - "--main_process_port=9999"
+  - "--same_network"
+  - "scripts/train_tatitok.py"
+  - "config=configs/training/TA-TiTok/tatitok_bl32_vq.yaml"
+  - "experiment.project=tatitok_dmlab_vq"
+  # - model.vq_model.vit_enc_patch_size=${patch_size}
+  # - model.vq_model.vit_dec_patch_size=${patch_size}
+  - model.vq_model.num_latent_tokens=${latent_tokens}
+  - "${args_no_hyphens}"
+
+parameters:
+  # patch_size:
+  #   values: [8, 16]
+  latent_tokens:
+    values: [8, 12, 16, 24, 32, 48, 64]

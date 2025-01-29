@@ -1,0 +1,24 @@
+method: grid
+metric:
+  name: train/perceptual_loss
+  goal: minimize
+
+command:
+  - bash
+  - train_double_image.sh
+  # - /home/siproman/.local/bin/accelerate
+  # - launch
+  - "--num_machines=1"
+  - "--num_processes=1"
+  - "--machine_rank=0"
+  - "--main_process_ip=127.0.0.1"
+  - "--main_process_port=9999"
+  - "--same_network"
+  - "scripts/train_tatitok.py"
+  - "config=configs/training/TA-TiTok/double_dmlab_vq.yaml"
+  - model.vq_model.num_latent_tokens=${latent_tokens}
+  - "${args_no_hyphens}"
+
+parameters:
+  latent_tokens:
+    values: [12, 16, 24, 32]
