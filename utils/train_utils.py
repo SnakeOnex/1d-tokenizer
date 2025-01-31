@@ -32,7 +32,7 @@ from torch.optim import AdamW
 from utils.lr_schedulers import get_scheduler
 from modeling.modules import EMAModel, ReconstructionLoss_Stage1, ReconstructionLoss_Stage2, ReconstructionLoss_Single_Stage, MLMLoss, ARLoss
 from modeling.titok import TiTok, PretrainedTokenizer
-from modeling.tatitok import TATiTok
+from modeling.tatitok import TATiTok, ViTiTok
 from modeling.maskgit import ImageBert, UViTBert
 from modeling.rar import RAR
 from evaluator import VQGANEvaluator
@@ -105,7 +105,8 @@ def create_model_and_loss_module(config, logger, accelerator,
         model_cls = TiTok
         loss_cls = ReconstructionLoss_Stage2 if config.model.vq_model.finetune_decoder else ReconstructionLoss_Stage1
     elif model_type == "tatitok":
-        model_cls = TATiTok
+        # model_cls = TATiTok
+        model_cls = ViTiTok
         loss_cls = ReconstructionLoss_Single_Stage
     elif model_type == "maskgit":
         if config.model.generator.model_type == "ViT":
@@ -168,9 +169,9 @@ def create_model_and_loss_module(config, logger, accelerator,
             col_names=("input_size", "output_size", "num_params", "params_percent", "kernel_size", "mult_adds"))
             logger.info(model_summary_str)
         elif model_type in ["tatitok"]:
-            input_image_size  = (1, 3, config.dataset.preprocessing.crop_size, config.dataset.preprocessing.crop_size)
-            input_text_size = (1, 77, 768)
-            input_size = [input_image_size, input_text_size]
+            # input_image_size  = (1, 3, config.dataset.preprocessing.crop_size[0], config.dataset.preprocessing.crop_size[1])
+            input_image_size  = (1, 3, config.dataset.preprocessing.crop_size[0], config.dataset.preprocessing.crop_size[1])
+            input_size = [input_image_size]
             model_summary_str = summary(model, input_size=input_size, depth=5,
             col_names=("input_size", "output_size", "num_params", "params_percent", "kernel_size", "mult_adds"))
             logger.info(model_summary_str)
@@ -430,7 +431,7 @@ def train_one_epoch(config, logger, accelerator,
                         extra_results_dict
                     )    
             elif model_type == "tatitok":
-                reconstructed_images, extra_results_dict = model(images, text_guidance)
+                reconstructed_images, extra_results_dict = model(images)
                 autoencoder_loss, loss_dict = loss_module(
                     images,
                     reconstructed_images,
@@ -839,23 +840,24 @@ def eval_reconstruction(
         images = batch["image"].to(
             accelerator.device, memory_format=torch.contiguous_format, non_blocking=True
         )
-        if model_type == "tatitok":
-            conditions = batch["class_id"]
-            text = [f"A photo of a {imagenet_idx2classname[condition.item()]}." for condition in conditions]
-            text_guidance = clip_tokenizer(text).to(accelerator.device)
-            cast_dtype = clip_encoder.transformer.get_cast_dtype()
-            text_guidance = clip_encoder.token_embedding(text_guidance).to(cast_dtype)  # [batch_size, n_ctx, d_model]
-            text_guidance = text_guidance + clip_encoder.positional_embedding.to(cast_dtype)
-            text_guidance = text_guidance.permute(1, 0, 2)  # NLD -> LND
-            text_guidance = clip_encoder.transformer(text_guidance, attn_mask=clip_encoder.attn_mask)
-            text_guidance = text_guidance.permute(1, 0, 2)  # LND -> NLD
-            text_guidance = clip_encoder.ln_final(text_guidance)  # [batch_size, n_ctx, transformer.width]
+        # if model_type == "tatitok":
+        #     # conditions = batch["class_id"]
+        #     text = [f"A photo of a cat" for _ in range(batch["image"].size(0))]
+        #     text_guidance = clip_tokenizer(text).to(accelerator.device)
+        #     cast_dtype = clip_encoder.transformer.get_cast_dtype()
+        #     text_guidance = clip_encoder.token_embedding(text_guidance).to(cast_dtype)  # [batch_size, n_ctx, d_model]
+        #     text_guidance = text_guidance + clip_encoder.positional_embedding.to(cast_dtype)
+        #     text_guidance = text_guidance.permute(1, 0, 2)  # NLD -> LND
+        #     text_guidance = clip_encoder.transformer(text_guidance, attn_mask=clip_encoder.attn_mask)
+        #     text_guidance = text_guidance.permute(1, 0, 2)  # LND -> NLD
+        #     text_guidance = clip_encoder.ln_final(text_guidance)  # [batch_size, n_ctx, transformer.width]
 
         original_images = torch.clone(images)
         if model_type == "titok":
             reconstructed_images, model_dict = local_model(images)
         elif model_type == "tatitok":
-            reconstructed_images, model_dict = local_model(images, text_guidance)
+            reconstructed_images, model_dict = local_model(images)
+            print("reconstructed_images", reconstructed_images.shape)
         else:
             raise NotImplementedError
 
@@ -865,7 +867,7 @@ def eval_reconstruction(
         # Quantize to uint8
         reconstructed_images = torch.round(reconstructed_images * 255.0) / 255.0
         original_images = torch.clamp(original_images, 0.0, 1.0)
-        
+
         if isinstance(model_dict, dict): 
             # For VQ model.
             evaluator.update(original_images, reconstructed_images.squeeze(2), model_dict["min_encoding_indices"])
@@ -897,7 +899,7 @@ def reconstruct_images(model, original_images, fnames, accelerator,
     if model_type == "titok":
         reconstructed_images = accelerator.unwrap_model(model).decode(enc_tokens)
     elif model_type == "tatitok":
-        reconstructed_images = accelerator.unwrap_model(model).decode(enc_tokens, text_guidance)
+        reconstructed_images = accelerator.unwrap_model(model).decode(enc_tokens)
     if pretrained_tokenizer is not None:
         reconstructed_images = pretrained_tokenizer.decode(reconstructed_images.argmax(1))
     images_for_saving, images_for_logging = make_viz_from_samples(

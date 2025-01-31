@@ -87,7 +87,8 @@ class ImageTransform:
             [
                 # Note that we always resize to crop_size during eval to ensure the results
                 # can be compared against reference numbers on ImageNet etc.
-                transforms.Resize(crop_size, interpolation=interpolation, antialias=True),
+                transforms.Resize(resize_shorter_edge, interpolation=interpolation, antialias=True),
+                # transforms.Resize(crop_size, interpolation=interpolation, antialias=True),
                 transforms.CenterCrop(crop_size),
                 transforms.ToTensor(),
                 transforms.Normalize(normalize_mean, normalize_std)
@@ -141,46 +142,26 @@ class SimpleImageDataset:
                 wds.decode(wds.autodecode.ImageHandler("pil", extensions=["webp", "png", "jpg", "jpeg"])),
                 wds.rename(
                     image="jpg;png;jpeg;webp",
-                    class_id="cls",
                     handler=wds.warn_and_continue,
                     ),
                 wds.map(filter_keys(set(["image", "class_id", "filename"]))),
                 wds.map_dict(
                     image=transform.train_transform,
-                    class_id=lambda x: int(x),
                     handler=wds.warn_and_continue,
                 ),
             ]
-        elif dataset_with_text_label:
-            train_processing_pipeline = [
-                wds.map(load_json),
-                wds.select(filter_by_res_ratio()) if res_ratio_filtering else wds.map(identity),
-                wds.decode(wds.autodecode.ImageHandler("pil", extensions=["webp", "png", "jpg", "jpeg"]),only=["webp", "png", "jpg", "jpeg", "txt"]),
-                wds.rename(
-                    image="jpg;png;jpeg;webp",
-                    text="txt",
-                    handler=wds.warn_and_continue,
-                    ),
-                wds.map(filter_keys(set(["image", "text", "__key__"]))),
-                wds.map_dict(
-                    image=transform.train_transform,
-                    handler=wds.warn_and_continue,
-                ),
-            ]
-        else:
-            raise NotImplementedError
 
         test_processing_pipeline = [
             wds.decode(wds.autodecode.ImageHandler("pil", extensions=["webp", "png", "jpg", "jpeg"])),
             wds.rename(
                 image="jpg;png;jpeg;webp",
-                class_id="cls",
+                # class_id="cls",
                 handler=wds.warn_and_continue,
                 ),
             wds.map(filter_keys(set(["image", "class_id", "filename"]))),
             wds.map_dict(
                 image=transform.eval_transform,
-                class_id=lambda x: int(x),
+                # class_id=lambda x: int(x),
                 handler=wds.warn_and_continue,
             ),
         ]
@@ -219,7 +200,7 @@ class SimpleImageDataset:
         pipeline = [
             wds.SimpleShardList(eval_shards_path),
             wds.split_by_worker,
-            wds.tarfile_to_samples(handler=wds.ignore_and_continue),
+            wds.tarfile_to_samples(handler=wds.warn_and_continue),
             *test_processing_pipeline,
             wds.batched(per_gpu_batch_size, partial=True, collation_fn=default_collate),
         ]
@@ -232,6 +213,12 @@ class SimpleImageDataset:
             pin_memory=True,
             persistent_workers=True,
         )
+
+        atleast_one_batch = False
+        for _ in self._eval_dataloader:
+            atleast_one_batch = True
+            break
+        assert atleast_one_batch, "No batch in eval dataset"
 
     @property
     def train_dataset(self):

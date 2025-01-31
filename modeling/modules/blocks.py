@@ -24,6 +24,7 @@ import torch.nn as nn
 from collections import OrderedDict
 import einops
 from einops.layers.torch import Rearrange
+from einops import rearrange
 
 
 class ResidualAttentionBlock(nn.Module):
@@ -208,7 +209,9 @@ class TiTokEncoder(nn.Module):
         self.config = config
         self.image_size = config.dataset.preprocessing.crop_size 
         self.patch_size = config.model.vq_model.vit_enc_patch_size
-        self.grid_size = self.image_size // self.patch_size
+        self.grid_size_y = self.image_size[0] // self.patch_size
+        self.grid_size_x = self.image_size[1] // self.patch_size
+        self.grid_size = self.grid_size_y * self.grid_size_x
         self.model_size = config.model.vq_model.vit_enc_model_size
         self.num_latent_tokens = config.model.vq_model.num_latent_tokens
         self.token_size = config.model.vq_model.token_size
@@ -241,7 +244,7 @@ class TiTokEncoder(nn.Module):
         scale = self.width ** -0.5
         self.class_embedding = nn.Parameter(scale * torch.randn(1, self.width))
         self.positional_embedding = nn.Parameter(
-                scale * torch.randn(self.grid_size ** 2 + 1, self.width))
+                scale * torch.randn(self.grid_size + 1, self.width))
         self.latent_token_positional_embedding = nn.Parameter(
             scale * torch.randn(self.num_latent_tokens, self.width))
         self.ln_pre = nn.LayerNorm(self.width)
@@ -274,7 +277,104 @@ class TiTokEncoder(nn.Module):
             x = self.transformer[i](x)
         x = x.permute(1, 0, 2)  # LND -> NLD
         
-        latent_tokens = x[:, 1+self.grid_size**2:]
+        latent_tokens = x[:, 1+self.grid_size:]
+        latent_tokens = self.ln_post(latent_tokens)
+        # fake 2D shape
+        if self.is_legacy:
+            latent_tokens = latent_tokens.reshape(batch_size, self.width, self.num_latent_tokens, 1)
+        else:
+            # Fix legacy problem.
+            latent_tokens = latent_tokens.reshape(batch_size, self.num_latent_tokens, self.width, 1).permute(0, 2, 1, 3)
+        latent_tokens = self.conv_out(latent_tokens)
+        latent_tokens = latent_tokens.reshape(batch_size, self.token_size, 1, self.num_latent_tokens)
+        return latent_tokens
+
+class ViTiTokEncoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.image_size = config.dataset.preprocessing.crop_size 
+        self.patch_size = config.model.vq_model.vit_enc_patch_size
+        self.patch_depth = config.model.vq_model.vit_patch_depth
+        self.grid_size_y = self.image_size[0] // self.patch_size
+        self.grid_size_x = self.image_size[0] // self.patch_size
+        self.grid_size = self.grid_size_y * self.grid_size_x
+        self.model_size = config.model.vq_model.vit_enc_model_size
+        self.num_latent_tokens = config.model.vq_model.num_latent_tokens
+        self.token_size = config.model.vq_model.token_size
+
+        if config.model.vq_model.get("quantize_mode", "vq") == "vae":
+            self.token_size = self.token_size * 2 # needs to split into mean and std
+
+        self.is_legacy = config.model.vq_model.get("is_legacy", True)
+
+        self.width = {
+                "small": 512,
+                "base": 768,
+                "large": 1024,
+            }[self.model_size]
+        self.num_layers = {
+                "small": 8,
+                "base": 12,
+                "large": 24,
+            }[self.model_size]
+        self.num_heads = {
+                "small": 8,
+                "base": 12,
+                "large": 16,
+            }[self.model_size]
+        
+        self.patch_embed = nn.Conv3d(
+            in_channels=3, 
+            out_channels=self.width,
+            kernel_size=(self.patch_depth, self.patch_size, self.patch_size),
+            stride=(self.patch_depth, self.patch_size, self.patch_size),
+            bias=True
+        )
+        
+        scale = self.width ** -0.5
+        self.class_embedding = nn.Parameter(scale * torch.randn(1, self.width))
+        self.positional_embedding = nn.Parameter(
+                scale * torch.randn(self.grid_size + 1, self.width))
+        self.latent_token_positional_embedding = nn.Parameter(
+            scale * torch.randn(self.num_latent_tokens, self.width))
+        self.ln_pre = nn.LayerNorm(self.width)
+        self.transformer = nn.ModuleList()
+        for i in range(self.num_layers):
+            self.transformer.append(ResidualAttentionBlock(
+                self.width, self.num_heads, mlp_ratio=4.0
+            ))
+        self.ln_post = nn.LayerNorm(self.width)
+        self.conv_out = nn.Conv2d(self.width, self.token_size, kernel_size=1, bias=True)
+
+    def forward(self, pixel_values, latent_tokens):
+        batch_size = pixel_values.shape[0]
+
+        # print(f"orig_shape={pixel_values.shape}")
+        pixel_values = rearrange(pixel_values, 'b c h (T w) -> b c T h w', T=self.patch_depth)
+        # print(f"post_shape={pixel_values.shape}")
+    # fake_data = rearrange(fake_data, 'b c h (n w) -> b c n h w', n=16)
+
+        x = pixel_values
+        x = self.patch_embed(x)
+        x = x.reshape(x.shape[0], x.shape[1], -1)
+        x = x.permute(0, 2, 1) # shape = [*, grid ** 2, width]
+        # class embeddings and positional embeddings
+        x = torch.cat([_expand_token(self.class_embedding, x.shape[0]).to(x.dtype), x], dim=1)
+        x = x + self.positional_embedding.to(x.dtype) # shape = [*, grid ** 2 + 1, width]
+        
+
+        latent_tokens = _expand_token(latent_tokens, x.shape[0]).to(x.dtype)
+        latent_tokens = latent_tokens + self.latent_token_positional_embedding.to(x.dtype)
+        x = torch.cat([x, latent_tokens], dim=1)
+
+        x = self.ln_pre(x)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        for i in range(self.num_layers):
+            x = self.transformer[i](x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        
+        latent_tokens = x[:, 1+self.grid_size:]
         latent_tokens = self.ln_post(latent_tokens)
         # fake 2D shape
         if self.is_legacy:
@@ -293,7 +393,9 @@ class TiTokDecoder(nn.Module):
         self.config = config
         self.image_size = config.dataset.preprocessing.crop_size
         self.patch_size = config.model.vq_model.vit_dec_patch_size
-        self.grid_size = self.image_size // self.patch_size
+        self.grid_size_y = self.image_size[0] // self.patch_size
+        self.grid_size_x = self.image_size[1] // self.patch_size
+        self.grid_size = self.grid_size_y * self.grid_size_x
         self.model_size = config.model.vq_model.vit_dec_model_size
         self.num_latent_tokens = config.model.vq_model.num_latent_tokens
         self.token_size = config.model.vq_model.token_size
@@ -319,7 +421,7 @@ class TiTokDecoder(nn.Module):
         scale = self.width ** -0.5
         self.class_embedding = nn.Parameter(scale * torch.randn(1, self.width))
         self.positional_embedding = nn.Parameter(
-                scale * torch.randn(self.grid_size ** 2 + 1, self.width))
+                scale * torch.randn(self.grid_size + 1, self.width))
         # add mask token and query pos embed
         self.mask_token = nn.Parameter(scale * torch.randn(1, 1, self.width))
         self.latent_token_positional_embedding = nn.Parameter(
@@ -355,7 +457,7 @@ class TiTokDecoder(nn.Module):
 
         batchsize, seq_len, _ = x.shape
 
-        mask_tokens = self.mask_token.repeat(batchsize, self.grid_size**2, 1).to(x.dtype)
+        mask_tokens = self.mask_token.repeat(batchsize, self.grid_size, 1).to(x.dtype)
         mask_tokens = torch.cat([_expand_token(self.class_embedding, mask_tokens.shape[0]).to(mask_tokens.dtype),
                                     mask_tokens], dim=1)
         mask_tokens = mask_tokens + self.positional_embedding.to(mask_tokens.dtype)
@@ -367,25 +469,69 @@ class TiTokDecoder(nn.Module):
         for i in range(self.num_layers):
             x = self.transformer[i](x)
         x = x.permute(1, 0, 2)  # LND -> NLD
-        x = x[:, 1:1+self.grid_size**2] # remove cls embed
+        x = x[:, 1:1+self.grid_size] # remove cls embed
         x = self.ln_post(x)
         # N L D -> N D H W
-        x = x.permute(0, 2, 1).reshape(batchsize, self.width, self.grid_size, self.grid_size)
+        x = x.permute(0, 2, 1).reshape(batchsize, self.width, self.grid_size_y, self.grid_size_x)
         x = self.ffn(x.contiguous())
         x = self.conv_out(x)
         return x
 
-
-class TATiTokDecoder(TiTokDecoder):
+class ViTiTokDecoder(nn.Module):
     def __init__(self, config):
-        super().__init__(config)
-        scale = self.width ** -0.5
-        self.text_context_length = config.model.vq_model.get("text_context_length", 77)
-        self.text_embed_dim = config.model.vq_model.get("text_embed_dim", 768)
-        self.text_guidance_proj = nn.Linear(self.text_embed_dim, self.width)
-        self.text_guidance_positional_embedding = nn.Parameter(scale * torch.randn(self.text_context_length, self.width))
+        super().__init__()
+        self.config = config
+        self.image_size = config.dataset.preprocessing.crop_size
+        self.patch_size = config.model.vq_model.vit_dec_patch_size
+        self.patch_depth = config.model.vq_model.vit_patch_depth
+        self.grid_size_y = self.image_size[0] // self.patch_size
+        self.grid_size_x = self.image_size[0] // self.patch_size
+        self.grid_size = self.grid_size_y * self.grid_size_x
+        self.model_size = config.model.vq_model.vit_dec_model_size
+        self.num_latent_tokens = config.model.vq_model.num_latent_tokens
+        self.token_size = config.model.vq_model.token_size
+        self.width = {
+                "small": 512,
+                "base": 768,
+                "large": 1024,
+            }[self.model_size]
+        self.num_layers = {
+                "small": 8,
+                "base": 12,
+                "large": 24,
+            }[self.model_size]
+        self.num_heads = {
+                "small": 8,
+                "base": 12,
+                "large": 16,
+            }[self.model_size]
 
-    def forward(self, z_quantized, text_guidance):
+        self.decoder_embed = nn.Linear(
+            self.token_size, self.width, bias=True)
+        scale = self.width ** -0.5
+        self.class_embedding = nn.Parameter(scale * torch.randn(1, self.width))
+        self.positional_embedding = nn.Parameter(
+                scale * torch.randn(self.grid_size + 1, self.width))
+        # add mask token and query pos embed
+        self.mask_token = nn.Parameter(scale * torch.randn(1, 1, self.width))
+        self.latent_token_positional_embedding = nn.Parameter(
+            scale * torch.randn(self.num_latent_tokens, self.width))
+        self.ln_pre = nn.LayerNorm(self.width)
+        self.transformer = nn.ModuleList()
+        for i in range(self.num_layers):
+            self.transformer.append(ResidualAttentionBlock(
+                self.width, self.num_heads, mlp_ratio=4.0
+            ))
+        self.ln_post = nn.LayerNorm(self.width)
+
+        # Directly predicting RGB pixels
+        self.ffn = nn.Sequential(
+            nn.Conv3d(self.width, self.patch_depth * self.patch_size * self.patch_size * 3, 1, padding=0, bias=True),
+            Rearrange('b (pd p1 p2 c) 1 h w -> b c pd (h p1) (w p2)', pd=self.patch_depth, p1 = self.patch_size, p2 = self.patch_size),)
+        # self.conv_out = nn.Conv2d(3, 3, 3, padding=1, bias=True)
+        # self.conv_out = nn.Conv2d(3, 3, 3, padding=1, bias=True)
+    
+    def forward(self, z_quantized):
         N, C, H, W = z_quantized.shape
         assert H == 1 and W == self.num_latent_tokens, f"{H}, {W}, {self.num_latent_tokens}"
         x = z_quantized.reshape(N, C*H, W).permute(0, 2, 1) # NLD
@@ -393,26 +539,66 @@ class TATiTokDecoder(TiTokDecoder):
 
         batchsize, seq_len, _ = x.shape
 
-        mask_tokens = self.mask_token.repeat(batchsize, self.grid_size**2, 1).to(x.dtype)
+        mask_tokens = self.mask_token.repeat(batchsize, self.grid_size, 1).to(x.dtype)
         mask_tokens = torch.cat([_expand_token(self.class_embedding, mask_tokens.shape[0]).to(mask_tokens.dtype),
                                     mask_tokens], dim=1)
         mask_tokens = mask_tokens + self.positional_embedding.to(mask_tokens.dtype)
         x = x + self.latent_token_positional_embedding[:seq_len]
         x = torch.cat([mask_tokens, x], dim=1)
-
-        text_guidance = self.text_guidance_proj(text_guidance)
-        text_guidance = text_guidance + self.text_guidance_positional_embedding
-        x = torch.cat([x, text_guidance], dim=1)
         
         x = self.ln_pre(x)
         x = x.permute(1, 0, 2)  # NLD -> LND
         for i in range(self.num_layers):
             x = self.transformer[i](x)
         x = x.permute(1, 0, 2)  # LND -> NLD
-        x = x[:, 1:1+self.grid_size**2] # remove cls embed
+        x = x[:, 1:1+self.grid_size] # remove cls embed
         x = self.ln_post(x)
         # N L D -> N D H W
-        x = x.permute(0, 2, 1).reshape(batchsize, self.width, self.grid_size, self.grid_size)
+        # x = x.permute(0, 2, 1).reshape(batchsize, self.width, self.grid_size_y, self.grid_size_x)
+        # x = rearrange(x, 'b (h w) d -> b d h w', h=self.grid_size_y, w=self.grid_size_x) # for 2D
+        x = rearrange(x, 'b (h w) d -> b d 1 h w', h=self.grid_size_y, w=self.grid_size_x) # for 3D (if T != self.patch_depth => replace 1 with T//self.patch_depth)
+        x = self.ffn(x.contiguous())
+
+        x = rearrange(x, 'b c t h w -> b c h (t w)', t=self.patch_depth)
+        # x = self.conv_out(x)
+        return x
+
+
+class TATiTokDecoder(TiTokDecoder):
+    def __init__(self, config):
+        super().__init__(config)
+        scale = self.width ** -0.5
+        # self.text_context_length = config.model.vq_model.get("text_context_length", 77)
+        # self.text_embed_dim = config.model.vq_model.get("text_embed_dim", 768)
+        # self.text_guidance_proj = nn.Linear(self.text_embed_dim, self.width)
+        # self.text_guidance_positional_embedding = nn.Parameter(scale * torch.randn(self.text_context_length, self.width))
+
+    def forward(self, z_quantized):
+        N, C, H, W = z_quantized.shape
+        assert H == 1 and W == self.num_latent_tokens, f"{H}, {W}, {self.num_latent_tokens}"
+        x = z_quantized.reshape(N, C*H, W).permute(0, 2, 1) # NLD
+        x = self.decoder_embed(x)
+
+        batchsize, seq_len, _ = x.shape
+
+        mask_tokens = self.mask_token.repeat(batchsize, self.grid_size, 1).to(x.dtype)
+        mask_tokens = torch.cat([_expand_token(self.class_embedding, mask_tokens.shape[0]).to(mask_tokens.dtype),
+                                    mask_tokens], dim=1)
+        mask_tokens = mask_tokens + self.positional_embedding.to(mask_tokens.dtype)
+        x = x + self.latent_token_positional_embedding[:seq_len]
+        x = torch.cat([mask_tokens, x], dim=1)
+
+        x = torch.cat([x], dim=1)
+        
+        x = self.ln_pre(x)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        for i in range(self.num_layers):
+            x = self.transformer[i](x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = x[:, 1:1+self.grid_size] # remove cls embed
+        x = self.ln_post(x)
+        # N L D -> N D H W
+        x = x.permute(0, 2, 1).reshape(batchsize, self.width, self.grid_size_y, self.grid_size_x)
         x = self.ffn(x.contiguous())
         x = self.conv_out(x)
         return x
