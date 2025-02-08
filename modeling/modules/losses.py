@@ -276,6 +276,11 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
                            global_step: int
                            ) -> Tuple[torch.Tensor, Mapping[Text, torch.Tensor]]:
         """Generator training step."""
+
+        if len(inputs.shape) == 5 and len(reconstructions.shape) == 5:
+            inputs = rearrange(inputs, "b c t h w -> b c h (t w)")
+            reconstructions = rearrange(reconstructions, "b c t h w -> b c h (t w)")
+
         inputs = inputs.contiguous()
         reconstructions = reconstructions.contiguous()
         if self.reconstruction_loss == "l1":
@@ -287,7 +292,10 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
         reconstruction_loss *= self.reconstruction_weight
 
         # Compute perceptual loss.
-        perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
+        if self.perceptual_weight > 0.0:
+            perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
+        else:
+            perceptual_loss = torch.zeros((), device=inputs.device)
 
         # Compute discriminator loss.
         generator_loss = torch.zeros((), device=inputs.device)

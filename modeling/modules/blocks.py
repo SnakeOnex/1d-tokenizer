@@ -350,10 +350,7 @@ class ViTiTokEncoder(nn.Module):
     def forward(self, pixel_values, latent_tokens):
         batch_size = pixel_values.shape[0]
 
-        # print(f"orig_shape={pixel_values.shape}")
-        pixel_values = rearrange(pixel_values, 'b c h (T w) -> b c T h w', T=self.patch_depth)
-        # print(f"post_shape={pixel_values.shape}")
-    # fake_data = rearrange(fake_data, 'b c h (n w) -> b c n h w', n=16)
+        # pixel_values = rearrange(pixel_values, 'b t c h w -> b c t h w')
 
         x = pixel_values
         x = self.patch_embed(x)
@@ -559,7 +556,7 @@ class ViTiTokDecoder(nn.Module):
         x = rearrange(x, 'b (h w) d -> b d 1 h w', h=self.grid_size_y, w=self.grid_size_x) # for 3D (if T != self.patch_depth => replace 1 with T//self.patch_depth)
         x = self.ffn(x.contiguous())
 
-        x = rearrange(x, 'b c t h w -> b c h (t w)', t=self.patch_depth)
+        # x = rearrange(x, 'b c t h w -> b c h (t w)', t=self.patch_depth)
         # x = self.conv_out(x)
         return x
 

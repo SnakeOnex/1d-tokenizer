@@ -23,6 +23,7 @@ import pprint
 import glob
 from collections import defaultdict
 import open_clip
+from einops import rearrange
 
 from data import SimpleImageDataset, PretoeknizedDataSetJSONL
 import torch
@@ -170,7 +171,7 @@ def create_model_and_loss_module(config, logger, accelerator,
             logger.info(model_summary_str)
         elif model_type in ["tatitok"]:
             # input_image_size  = (1, 3, config.dataset.preprocessing.crop_size[0], config.dataset.preprocessing.crop_size[1])
-            input_image_size  = (1, 3, config.dataset.preprocessing.crop_size[0], config.dataset.preprocessing.crop_size[1])
+            input_image_size  = (1, 3, 16, config.dataset.preprocessing.crop_size[0], config.dataset.preprocessing.crop_size[1])
             input_size = [input_image_size]
             model_summary_str = summary(model, input_size=input_size, depth=5,
             col_names=("input_size", "output_size", "num_params", "params_percent", "kernel_size", "mult_adds"))
@@ -292,6 +293,7 @@ def create_dataloader(config, logger, accelerator):
         random_flip=preproc_config.random_flip,
         dataset_with_class_label=dataset_config.dataset_with_class_label,
         dataset_with_text_label=dataset_config.dataset_with_text_label,
+        dataset_with_video=dataset_config.dataset_with_video,
         res_ratio_filtering=preproc_config.res_ratio_filtering
     )
     train_dataloader, eval_dataloader = dataset.train_dataloader, dataset.eval_dataloader
@@ -390,19 +392,23 @@ def train_one_epoch(config, logger, accelerator,
             images = batch["image"].to(
                 accelerator.device, memory_format=torch.contiguous_format, non_blocking=True
             )
+        if "video" in batch:
+            images = batch["video"].to(
+                accelerator.device, memory_format=torch.contiguous_format, non_blocking=True
+            )
         if model_type == "tatitok":
-            text = ["a photo of a cat"]*images.size(0)
-            # text = batch["text"]
-            with torch.no_grad():
-                text_guidance = clip_tokenizer(text).to(accelerator.device)
-                cast_dtype = clip_encoder.transformer.get_cast_dtype()
-                text_guidance = clip_encoder.token_embedding(text_guidance).to(cast_dtype)  # [batch_size, n_ctx, d_model]
-                text_guidance = text_guidance + clip_encoder.positional_embedding.to(cast_dtype)
-                text_guidance = text_guidance.permute(1, 0, 2)  # NLD -> LND
-                text_guidance = clip_encoder.transformer(text_guidance, attn_mask=clip_encoder.attn_mask)
-                text_guidance = text_guidance.permute(1, 0, 2)  # LND -> NLD
-                text_guidance = clip_encoder.ln_final(text_guidance)  # [batch_size, n_ctx, transformer.width]
-
+            # text = ["a photo of a cat"]*images.size(0)
+            # # text = batch["text"]
+            # with torch.no_grad():
+            #     text_guidance = clip_tokenizer(text).to(accelerator.device)
+            #     cast_dtype = clip_encoder.transformer.get_cast_dtype()
+            #     text_guidance = clip_encoder.token_embedding(text_guidance).to(cast_dtype)  # [batch_size, n_ctx, d_model]
+            #     text_guidance = text_guidance + clip_encoder.positional_embedding.to(cast_dtype)
+            #     text_guidance = text_guidance.permute(1, 0, 2)  # NLD -> LND
+            #     text_guidance = clip_encoder.transformer(text_guidance, attn_mask=clip_encoder.attn_mask)
+            #     text_guidance = text_guidance.permute(1, 0, 2)  # LND -> NLD
+            #     text_guidance = clip_encoder.ln_final(text_guidance)  # [batch_size, n_ctx, transformer.width]
+            pass
         fnames = batch["__key__"]
         data_time_meter.update(time.time() - end)
 
@@ -431,6 +437,8 @@ def train_one_epoch(config, logger, accelerator,
                         extra_results_dict
                     )    
             elif model_type == "tatitok":
+                # reconstructed_images, extra_results_dict = model(images)
+                # print(f"Videos shape: {images.shape}")
                 reconstructed_images, extra_results_dict = model(images)
                 autoencoder_loss, loss_dict = loss_module(
                     images,
@@ -570,7 +578,7 @@ def train_one_epoch(config, logger, accelerator,
                     logger=logger,
                     config=config,
                     model_type=model_type,
-                    text_guidance=text_guidance[:config.training.num_generated_images] if model_type == "tatitok" else None,
+                    # text_guidance=text_guidance[:config.training.num_generated_images] if model_type == "tatitok" else None,
                     pretrained_tokenizer=pretrained_tokenizer
                 )
 
@@ -642,6 +650,113 @@ def train_one_epoch(config, logger, accelerator,
 
     return global_step
 
+
+
+@torch.no_grad()
+def eval_reconstruction(
+    model,
+    eval_loader,
+    accelerator,
+    evaluator,
+    model_type="titok",
+    clip_tokenizer=None,
+    clip_encoder=None,
+    pretrained_tokenizer=None
+):
+    model.eval()
+    evaluator.reset_metrics()
+    local_model = accelerator.unwrap_model(model)
+
+    for batch in eval_loader:
+        if "image" in batch:
+            images = batch["image"].to(
+                accelerator.device, memory_format=torch.contiguous_format, non_blocking=True
+            )
+        elif "video" in batch:
+            images = batch["video"].to(
+                accelerator.device, memory_format=torch.contiguous_format, non_blocking=True
+            )
+
+        original_images = torch.clone(images)
+        if model_type == "titok":
+            reconstructed_images, model_dict = local_model(images)
+        elif model_type == "tatitok":
+            reconstructed_images, model_dict = local_model(images)
+            print("reconstructed_images", reconstructed_images.shape)
+        else:
+            raise NotImplementedError
+
+        if pretrained_tokenizer is not None:
+            reconstructed_images = pretrained_tokenizer.decode(reconstructed_images.argmax(1))
+        reconstructed_images = torch.clamp(reconstructed_images, 0.0, 1.0)
+        # Quantize to uint8
+        reconstructed_images = torch.round(reconstructed_images * 255.0) / 255.0
+        original_images = torch.clamp(original_images, 0.0, 1.0)
+
+        if isinstance(model_dict, dict): 
+            # For VQ model.
+            evaluator.update(original_images, reconstructed_images.squeeze(2), model_dict["min_encoding_indices"])
+        else:
+            # For VAE model.
+            evaluator.update(original_images, reconstructed_images.squeeze(2), None)
+            
+    model.train()
+    return evaluator.result()
+
+
+@torch.no_grad()
+def reconstruct_images(model, original_images, fnames, accelerator, 
+                    global_step, output_dir, logger, config=None,
+                    model_type="titok", text_guidance=None, 
+                    pretrained_tokenizer=None):
+    logger.info("Reconstructing images...")
+    original_images = torch.clone(original_images)
+
+
+    model.eval()
+    dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        dtype = torch.bfloat16
+
+    with torch.autocast("cuda", dtype=dtype, enabled=accelerator.mixed_precision != "no"):
+        enc_tokens, encoder_dict = accelerator.unwrap_model(model).encode(original_images)
+    
+    if model_type == "titok":
+        reconstructed_images = accelerator.unwrap_model(model).decode(enc_tokens)
+    elif model_type == "tatitok":
+        reconstructed_images = accelerator.unwrap_model(model).decode(enc_tokens)
+    if pretrained_tokenizer is not None:
+        reconstructed_images = pretrained_tokenizer.decode(reconstructed_images.argmax(1))
+
+    if len(original_images.shape) == 5 and len(reconstructed_images.shape) == 5:
+        original_images = rearrange(original_images, "b c t h w -> b c h (t w)")
+        reconstructed_images = rearrange(reconstructed_images, "b c t h w -> b c h (t w)")
+
+    images_for_saving, images_for_logging = make_viz_from_samples(
+        original_images,
+        reconstructed_images
+    )
+    # Log images.
+    if config.training.enable_wandb:
+        accelerator.get_tracker("wandb").log_images(
+            {f"Train Reconstruction": images_for_saving},
+            step=global_step
+        )
+    else:
+        accelerator.get_tracker("tensorboard").log_images(
+            {"Train Reconstruction": images_for_logging}, step=global_step
+        )
+    # Log locally.
+    root = Path(output_dir) / "train_images"
+    os.makedirs(root, exist_ok=True)
+    for i,img in enumerate(images_for_saving):
+        filename = f"{global_step:08}_s-{i:03}-{fnames[i]}.png"
+        path = os.path.join(root, filename)
+        img.save(path)
+
+    model.train()
 
 def get_rar_random_ratio(config, cur_step):
     randomness_anneal_start = config.model.generator.randomness_anneal_start
@@ -819,112 +934,6 @@ def train_one_epoch_generator(
 
 
     return global_step
-
-
-@torch.no_grad()
-def eval_reconstruction(
-    model,
-    eval_loader,
-    accelerator,
-    evaluator,
-    model_type="titok",
-    clip_tokenizer=None,
-    clip_encoder=None,
-    pretrained_tokenizer=None
-):
-    model.eval()
-    evaluator.reset_metrics()
-    local_model = accelerator.unwrap_model(model)
-
-    for batch in eval_loader:
-        images = batch["image"].to(
-            accelerator.device, memory_format=torch.contiguous_format, non_blocking=True
-        )
-        # if model_type == "tatitok":
-        #     # conditions = batch["class_id"]
-        #     text = [f"A photo of a cat" for _ in range(batch["image"].size(0))]
-        #     text_guidance = clip_tokenizer(text).to(accelerator.device)
-        #     cast_dtype = clip_encoder.transformer.get_cast_dtype()
-        #     text_guidance = clip_encoder.token_embedding(text_guidance).to(cast_dtype)  # [batch_size, n_ctx, d_model]
-        #     text_guidance = text_guidance + clip_encoder.positional_embedding.to(cast_dtype)
-        #     text_guidance = text_guidance.permute(1, 0, 2)  # NLD -> LND
-        #     text_guidance = clip_encoder.transformer(text_guidance, attn_mask=clip_encoder.attn_mask)
-        #     text_guidance = text_guidance.permute(1, 0, 2)  # LND -> NLD
-        #     text_guidance = clip_encoder.ln_final(text_guidance)  # [batch_size, n_ctx, transformer.width]
-
-        original_images = torch.clone(images)
-        if model_type == "titok":
-            reconstructed_images, model_dict = local_model(images)
-        elif model_type == "tatitok":
-            reconstructed_images, model_dict = local_model(images)
-            print("reconstructed_images", reconstructed_images.shape)
-        else:
-            raise NotImplementedError
-
-        if pretrained_tokenizer is not None:
-            reconstructed_images = pretrained_tokenizer.decode(reconstructed_images.argmax(1))
-        reconstructed_images = torch.clamp(reconstructed_images, 0.0, 1.0)
-        # Quantize to uint8
-        reconstructed_images = torch.round(reconstructed_images * 255.0) / 255.0
-        original_images = torch.clamp(original_images, 0.0, 1.0)
-
-        if isinstance(model_dict, dict): 
-            # For VQ model.
-            evaluator.update(original_images, reconstructed_images.squeeze(2), model_dict["min_encoding_indices"])
-        else:
-            # For VAE model.
-            evaluator.update(original_images, reconstructed_images.squeeze(2), None)
-            
-    model.train()
-    return evaluator.result()
-
-
-@torch.no_grad()
-def reconstruct_images(model, original_images, fnames, accelerator, 
-                    global_step, output_dir, logger, config=None,
-                    model_type="titok", text_guidance=None, 
-                    pretrained_tokenizer=None):
-    logger.info("Reconstructing images...")
-    original_images = torch.clone(original_images)
-    model.eval()
-    dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        dtype = torch.bfloat16
-
-    with torch.autocast("cuda", dtype=dtype, enabled=accelerator.mixed_precision != "no"):
-        enc_tokens, encoder_dict = accelerator.unwrap_model(model).encode(original_images)
-    
-    if model_type == "titok":
-        reconstructed_images = accelerator.unwrap_model(model).decode(enc_tokens)
-    elif model_type == "tatitok":
-        reconstructed_images = accelerator.unwrap_model(model).decode(enc_tokens)
-    if pretrained_tokenizer is not None:
-        reconstructed_images = pretrained_tokenizer.decode(reconstructed_images.argmax(1))
-    images_for_saving, images_for_logging = make_viz_from_samples(
-        original_images,
-        reconstructed_images
-    )
-    # Log images.
-    if config.training.enable_wandb:
-        accelerator.get_tracker("wandb").log_images(
-            {f"Train Reconstruction": images_for_saving},
-            step=global_step
-        )
-    else:
-        accelerator.get_tracker("tensorboard").log_images(
-            {"Train Reconstruction": images_for_logging}, step=global_step
-        )
-    # Log locally.
-    root = Path(output_dir) / "train_images"
-    os.makedirs(root, exist_ok=True)
-    for i,img in enumerate(images_for_saving):
-        filename = f"{global_step:08}_s-{i:03}-{fnames[i]}.png"
-        path = os.path.join(root, filename)
-        img.save(path)
-
-    model.train()
 
 
 @torch.no_grad()

@@ -24,6 +24,8 @@ import torch
 import torch.nn.functional as F
 
 from .inception import get_inception_model
+from .compute_fvd import calculate_fvd
+from .fvd import load_i3d_pretrained
 
 
 def get_covariance(sigma: torch.Tensor, total: torch.Tensor, num_examples: int) -> torch.Tensor:
@@ -53,7 +55,8 @@ class VQGANEvaluator:
         enable_inception_score: bool = True,
         enable_codebook_usage_measure: bool = False,
         enable_codebook_entropy_measure: bool = False,
-        num_codebook_entries: int = 1024
+        enable_rfvd: bool = True,
+        num_codebook_entries: int = 1024,
     ):
         """Initializes VQGAN Evaluator.
 
@@ -71,6 +74,7 @@ class VQGANEvaluator:
         self._enable_inception_score = enable_inception_score
         self._enable_codebook_usage_measure = enable_codebook_usage_measure
         self._enable_codebook_entropy_measure = enable_codebook_entropy_measure
+        self._enable_rfvd = enable_rfvd
         self._num_codebook_entries = num_codebook_entries
 
         # Variables related to Inception score and rFID.
@@ -82,6 +86,10 @@ class VQGANEvaluator:
             self._is_num_features = 1008
             self._inception_model = get_inception_model().to(self._device)
             self._inception_model.eval()
+        
+        if self._enable_rfvd:
+            self._i3d_model = load_i3d_pretrained(self._device)
+            self._i3d_model.eval()
         self._is_eps = 1e-16
         self._rfid_eps = 1e-6
 
@@ -112,6 +120,8 @@ class VQGANEvaluator:
         self._rfid_fake_total = torch.zeros(
             self._rfid_num_features, dtype=torch.float64, device=self._device
         )
+
+        self._rfvd_total = torch.tensor(0.0, dtype=torch.float64, device=self._device)
 
         self._set_of_codebook_indices = set()
         self._codebook_frequencies = torch.zeros((self._num_codebook_entries), dtype=torch.float64, device=self._device)
@@ -170,6 +180,13 @@ class VQGANEvaluator:
 
                 self._rfid_real_sigma += torch.outer(f_real, f_real)
                 self._rfid_fake_sigma += torch.outer(f_fake, f_fake)
+
+        if self._enable_rfvd:
+            # print("Calculating rfvd...")
+            assert real_images.max() <= 1.0 and real_images.min() >= 0.0, f"Real images should be in [0, 1], got {real_images.max()} and {real_images.min()}"
+            assert fake_images.max() <= 1.0 and fake_images.min() >= 0.0, f"Fake images should be in [0, 1], got {fake_images.max()} and {fake_images.min()}"
+            rfvd = calculate_fvd(real_images, fake_images, self._i3d_model, self._device, only_final=True)
+            self._rfvd_total += rfvd["value"][0]
 
         if self._enable_codebook_usage_measure:
             self._set_of_codebook_indices |= set(torch.unique(codebook_indices, sorted=False).tolist())
@@ -241,5 +258,8 @@ class VQGANEvaluator:
             probs = self._codebook_frequencies / self._codebook_frequencies.sum()
             entropy = (-torch.log2(probs + 1e-8) * probs).sum()
             eval_score["CodebookEntropy"] = entropy
+
+        if self._enable_rfvd:
+            eval_score["rFVD"] = self._rfvd_total / self._num_updates
 
         return eval_score

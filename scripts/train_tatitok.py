@@ -53,7 +53,7 @@ def main():
     output_dir = config.experiment.output_dir
     os.makedirs(output_dir, exist_ok=True)
     output_dir = os.path.join(output_dir, datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-    os.makedirs(output_dir, exist_ok=False)
+    os.makedirs(output_dir, exist_ok=True)
     config.experiment.logging_dir = os.path.join(output_dir, "logs")
 
     # Whether logging to Wandb or Tensorboard.

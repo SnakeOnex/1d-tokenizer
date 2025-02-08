@@ -21,6 +21,7 @@ Reference:
 # limitations under the License.
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 
 from torch_fidelity.feature_extractor_base import FeatureExtractorBase
 from torch_fidelity.helpers import vassert
@@ -101,6 +102,9 @@ class FeatureExtractorInceptionV3(FeatureExtractorBase):
         self.eval()
 
     def forward(self, x):
+        if len(x.shape) == 5:
+            x = rearrange(x, 'b c t h w -> b c h (t w)')
+
         vassert(torch.is_tensor(x) and x.dtype == torch.uint8, 'Expecting image as torch.Tensor with dtype=torch.uint8')
         vassert(x.dim() == 4 and x.shape[1] == 3, f'Input is not Bx3xHxW: {x.shape}')
         features = {}
