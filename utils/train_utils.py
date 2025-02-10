@@ -334,6 +334,20 @@ def create_evaluator(config, logger, accelerator):
         raise NotImplementedError
     return evaluator
 
+def eval_resume(config, logger, accelerator, model):
+    local_ckpt_list = list(glob.glob(os.path.join(config.experiment.output_dir, "checkpoint*")))
+    logger.info(f"All globbed checkpoints are: {local_ckpt_list}")
+    if len(local_ckpt_list) >= 1:
+        if len(local_ckpt_list) > 1:
+            fn = lambda x: int(x.split('/')[-1].split('-')[-1])
+            checkpoint_paths = sorted(local_ckpt_list, key=fn, reverse=True)
+        else:
+            checkpoint_paths = local_ckpt_list
+        _ = load_checkpoint(
+            Path(checkpoint_paths[0]),
+            accelerator,
+            logger=logger,
+        )
 
 def auto_resume(config, logger, accelerator, ema_model,
                 num_update_steps_per_epoch, strict=True):
